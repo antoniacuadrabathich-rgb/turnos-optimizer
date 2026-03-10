@@ -7,6 +7,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com"/>
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin/>
 <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;600;700;800&family=Syne:wght@400;600;700;800&display=swap" rel="stylesheet"/>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
 :root{
@@ -253,11 +254,12 @@ tr:hover{background:#f0e8fa}
           <div class="day-btn on" data-day="6">Sáb</div>
         </div>
       </div>
-      <div style="display:flex;gap:8px;align-items:center">
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
         <button class="btn btn-primary" onclick="addWorker()">+ Agregar trabajador</button>
         <button class="btn btn-default btn-sm" onclick="loadCSV()">↑ Cargar CSV</button>
         <input type="file" id="csv-input" accept=".csv" style="display:none" onchange="parseCSV(event)"/>
-        <span style="font-size:9px;color:var(--dim)">CSV: Nombre, Rol, HorasMax, Días (0-6 separados por |)</span>
+        <button class="btn btn-default btn-sm" onclick="downloadCSVTemplate()" title="Descarga un CSV con los encabezados correctos y ejemplos">⬇ Template CSV</button>
+        <button class="btn btn-default btn-sm" onclick="exportWorkersExcel()" style="border-color:var(--ok);color:var(--ok)" title="Exporta el equipo actual a Excel">📊 Descargar equipo (Excel)</button>
       </div>
     </div>
 
@@ -398,6 +400,11 @@ tr:hover{background:#f0e8fa}
 
     <div class="card">
       <div class="card-title">◷ Turnos Configurados</div>
+      <div style="background:var(--bg3);border:1px solid var(--border);border-radius:6px;padding:8px 12px;font-size:10px;color:var(--dim);margin-bottom:12px;line-height:1.6">
+        Cada turno tiene cobertura <span style="color:var(--accent);font-weight:700">L-V</span> y <span style="color:var(--warn);font-weight:700">S-D</span> independiente.
+        El <span style="color:var(--accent);font-weight:700">mínimo</span> es la cobertura obligatoria (si no se cumple, se genera alerta).
+        El <span style="color:var(--ok);font-weight:700">máximo</span> es hasta cuántos trabajadores asigna el optimizador si tienen horas disponibles. Usa 99 para rellenar al máximo.
+      </div>
       <div id="shifts-list"></div>
       <button class="btn btn-default btn-sm" onclick="addShift()" style="margin-top:10px">+ Agregar turno</button>
     </div>
@@ -706,9 +713,9 @@ let holidays = new Set([
 let freeSundaysMin = 2;
 
 let shifts = [
-  {id:'M',name:'Mañana',start:6,end:14,hours:8,color:'#8ec0d8',coverage:2},
-  {id:'T',name:'Tarde',start:14,end:22,hours:8,color:'#f2b889',coverage:2},
-  {id:'N',name:'Noche',start:22,end:6,hours:8,color:'#c0a8d8',coverage:2},
+  {id:'M',name:'Mañana',start:6,end:14,hours:8,color:'#8ec0d8',coverage:2,maxCoverage:99,coverageWe:2,maxCoverageWe:99},
+  {id:'T',name:'Tarde',start:14,end:22,hours:8,color:'#f2b889',coverage:2,maxCoverage:99,coverageWe:2,maxCoverageWe:99},
+  {id:'N',name:'Noche',start:22,end:6,hours:8,color:'#c0a8d8',coverage:2,maxCoverage:99,coverageWe:2,maxCoverageWe:99},
 ];
 
 let constraints = {rest:11,coverage:2,consec:5,shiftsPerDay:1};
@@ -911,23 +918,41 @@ function renderWorkers(){
 
 // CSV import
 function loadCSV(){ document.getElementById('csv-input').click(); }
+
+function downloadCSVTemplate(){
+  const DAYS_LABEL = ['Dom(0)','Lun(1)','Mar(2)','Mié(3)','Jue(4)','Vie(5)','Sáb(6)'];
+  const header = 'Nombre,Rol,HorasSemanales,DiasDisponibles(0-6 separados por |),TurnoPreferido';
+  const examples = [
+    'Juan Pérez,Operario,45,1|2|3|4|5,M',
+    'María López,Supervisora,45,1|2|3|4|5|6,T',
+    'Carlos Rojas,Nochero,45,1|2|3|4|5,N',
+    'Ana Torres,Part-time,22,1|3|5,',
+  ].join('\n');
+  const note = '# Días: 0=Dom 1=Lun 2=Mar 3=Mié 4=Jue 5=Vie 6=Sáb | TurnoPreferido: M/T/N u otro ID de turno (opcional)';
+  const blob = new Blob([note+'\n'+header+'\n'+examples], {type:'text/csv;charset=utf-8;'});
+  const a = document.createElement('a'); a.href=URL.createObjectURL(blob);
+  a.download='template_trabajadores.csv'; a.click();
+}
+
 function parseCSV(e){
   const f = e.target.files[0]; if(!f) return;
   const r = new FileReader();
   r.onload = ev=>{
-    const lines = ev.target.result.split('\n').filter(l=>l.trim());
+    const lines = ev.target.result.split('\n').filter(l=>l.trim()&&!l.trim().startsWith('#'));
     let added=0;
     lines.forEach((line,i)=>{
       if(i===0 && line.toLowerCase().includes('nombre')) return; // skip header
       const parts = line.split(',').map(s=>s.trim());
       if(parts.length<2) return;
+      const weeklyH = +parts[2]||45;
       const avail = parts[3] ? parts[3].split('|').map(n=>+n).filter(n=>n>=0&&n<=6) : [1,2,3,4,5];
+      const pshift = parts[4]||'';
       workers.push({
         id:'w'+(++_wid),
-        name:parts[0],role:parts[1]||'',
-        maxH:+parts[2]||160, weeklyH: Math.round((+parts[2]||160)/4.33),
-        avail, pshift:'',
-        type: (+parts[2]||160)<=80 ? 'pt' : 'ft',
+        name:parts[0], role:parts[1]||'',
+        weeklyH,
+        avail, pshift,
+        type: weeklyH<=25 ? 'pt' : 'ft',
         color:WC[workers.length%WC.length]
       });
       added++;
@@ -939,6 +964,45 @@ function parseCSV(e){
   };
   r.readAsText(f);
   e.target.value='';
+}
+
+function exportWorkersExcel(){
+  if(!workers.length){ alert('No hay trabajadores para exportar'); return; }
+  const DAYS_LABEL = {0:'Dom',1:'Lun',2:'Mar',3:'Mié',4:'Jue',5:'Vie',6:'Sáb'};
+  const SHIFT_LABEL = Object.fromEntries(shifts.map(s=>[s.id,s.name]));
+  const header = ['Nombre','Rol','Tipo','Horas/Semana','Días Disponibles','Turno Preferido','Color'];
+  const rows = workers.map(w=>[
+    w.name,
+    w.role||'',
+    w.type==='ft'?'Full-time':w.type==='pt'?'Part-time':'Custom',
+    w.weeklyH||45,
+    (w.avail||[]).map(d=>DAYS_LABEL[d]||d).join(' | '),
+    SHIFT_LABEL[w.pshift]||'Sin preferencia',
+    w.color||''
+  ]);
+
+  const ws = XLSX.utils.aoa_to_sheet([header,...rows]);
+  // Column widths
+  ws['!cols'] = [22,18,12,14,30,16,10].map(w=>({wch:w}));
+  // Style header row (bold + fill) — basic xlsx doesn't support styles without xlsx-style, but we can freeze
+  ws['!freeze'] = {xSplit:0, ySplit:1};
+
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, 'Equipo');
+
+  // Second sheet: summary stats
+  const statsHeader = ['Nombre','Rol','Horas/Sem','Días/Sem','Turno Pref'];
+  const statsRows = workers.map(w=>[
+    w.name, w.role||'',
+    w.weeklyH||45,
+    (w.avail||[]).length,
+    SHIFT_LABEL[w.pshift]||'-'
+  ]);
+  const ws2 = XLSX.utils.aoa_to_sheet([statsHeader,...statsRows]);
+  ws2['!cols'] = [22,18,12,10,16].map(w=>({wch:w}));
+  XLSX.utils.book_append_sheet(wb, ws2, 'Resumen');
+
+  XLSX.writeFile(wb, `equipo_pimientos_${new Date().toISOString().slice(0,10)}.xlsx`);
 }
 
 function renderPreferredShiftSelects(){
@@ -1150,7 +1214,7 @@ function renderCoverage(){
 }
 let _sid=10;
 function addShift(){
-  shifts.push({id:'S'+(++_sid),name:'Turno '+_sid,start:8,end:16,hours:8,color:'#90c8c0',coverage:2});
+  shifts.push({id:'S'+(++_sid),name:'Turno '+_sid,start:8,end:16,hours:8,color:'#90c8c0',coverage:2,maxCoverage:99,coverageWe:2,maxCoverageWe:99});
   renderShiftsList();
 }
 function removeShift(id){ if(shifts.length<=1){alert('Debe haber al menos 1 turno');return;} shifts=shifts.filter(s=>s.id!==id); renderShiftsList(); }
@@ -1159,18 +1223,32 @@ function updateShift(id,k,v){ shifts=shifts.map(s=>s.id===id?{...s,[k]:k==='name
 function renderShiftsList(){
   const el = document.getElementById('shifts-list');
   el.innerHTML = shifts.map(s=>`
-    <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;background:var(--bg3);padding:12px;border-radius:8px;border:1px solid var(--border);margin-bottom:8px">
-      <div style="width:14px;height:14px;border-radius:3px;background:${s.color};flex-shrink:0"></div>
-      <div style="flex:2;min-width:100px"><label>Nombre</label><input value="${s.name}" onchange="updateShift('${s.id}','name',this.value)"/></div>
-      <div style="flex:1;min-width:70px"><label>Inicio (h)</label><input type="number" value="${s.start}" onchange="updateShift('${s.id}','start',this.value)"/></div>
-      <div style="flex:1;min-width:70px"><label>Fin (h)</label><input type="number" value="${s.end}" onchange="updateShift('${s.id}','end',this.value)"/></div>
-      <div style="flex:1;min-width:70px"><label>Duración (h)</label><input type="number" value="${s.hours}" onchange="updateShift('${s.id}','hours',this.value)"/></div>
-      <div style="flex:1;min-width:80px">
-        <label style="color:var(--accent)">Cobertura mín.</label>
-        <input type="number" min="1" value="${s.coverage||2}" onchange="updateShift('${s.id}','coverage',this.value)" style="border-color:${s.color}55"/>
+    <div style="background:var(--bg3);padding:12px;border-radius:8px;border:1px solid var(--border);margin-bottom:10px">
+      <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:10px">
+        <div style="width:14px;height:14px;border-radius:3px;background:${s.color};flex-shrink:0"></div>
+        <div style="flex:2;min-width:100px"><label>Nombre</label><input value="${s.name}" onchange="updateShift('${s.id}','name',this.value)"/></div>
+        <div style="flex:1;min-width:70px"><label>Inicio (h)</label><input type="number" value="${s.start}" onchange="updateShift('${s.id}','start',this.value)"/></div>
+        <div style="flex:1;min-width:70px"><label>Fin (h)</label><input type="number" value="${s.end}" onchange="updateShift('${s.id}','end',this.value)"/></div>
+        <div style="flex:1;min-width:70px"><label>Duración (h)</label><input type="number" value="${s.hours}" onchange="updateShift('${s.id}','hours',this.value)"/></div>
+        <div style="flex:0 0 60px"><label>Color</label><input type="color" value="${s.color}" onchange="updateShift('${s.id}','color',this.value);renderShiftsList()"/></div>
+        <div style="flex:0 0 auto;padding-top:14px"><button class="btn btn-danger btn-sm" onclick="removeShift('${s.id}')">✕</button></div>
       </div>
-      <div style="flex:0 0 60px"><label>Color</label><input type="color" value="${s.color}" onchange="updateShift('${s.id}','color',this.value);renderShiftsList()"/></div>
-      <div style="flex:0 0 auto;padding-top:14px"><button class="btn btn-danger btn-sm" onclick="removeShift('${s.id}')">✕</button></div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+        <div style="background:var(--bg2);border:1px solid var(--border);border-radius:7px;padding:10px">
+          <div style="font-size:9px;font-weight:700;color:var(--accent);letter-spacing:.08em;text-transform:uppercase;margin-bottom:8px">📅 Lunes a Viernes</div>
+          <div style="display:flex;gap:8px">
+            <div style="flex:1"><label style="color:var(--accent)">Mín. personas</label><input type="number" min="0" value="${s.coverage||2}" onchange="updateShift('${s.id}','coverage',this.value)" style="border-color:${s.color}66"/></div>
+            <div style="flex:1"><label style="color:var(--ok)">Máx. personas</label><input type="number" min="0" value="${s.maxCoverage||99}" onchange="updateShift('${s.id}','maxCoverage',this.value)" style="border-color:${s.color}66"/></div>
+          </div>
+        </div>
+        <div style="background:var(--bg2);border:1px solid var(--border);border-radius:7px;padding:10px">
+          <div style="font-size:9px;font-weight:700;color:var(--warn);letter-spacing:.08em;text-transform:uppercase;margin-bottom:8px">🏖 Sábado y Domingo</div>
+          <div style="display:flex;gap:8px">
+            <div style="flex:1"><label style="color:var(--accent)">Mín. personas</label><input type="number" min="0" value="${s.coverageWe||s.coverage||2}" onchange="updateShift('${s.id}','coverageWe',this.value)" style="border-color:${s.color}66"/></div>
+            <div style="flex:1"><label style="color:var(--ok)">Máx. personas</label><input type="number" min="0" value="${s.maxCoverageWe||s.maxCoverage||99}" onchange="updateShift('${s.id}','maxCoverageWe',this.value)" style="border-color:${s.color}66"/></div>
+          </div>
+        </div>
+      </div>
     </div>
   `).join('');
   renderPreferredShiftSelects();
@@ -1226,6 +1304,7 @@ function generateSchedule(){
       const days = new Date(yr, mo, 0).getDate();
       const schedule={};
       const monthWarnings=[];
+      const monthAbsences=[];
 
       // Reset per-month state: hours AND consecutive counter
       workers.forEach(w=>{
@@ -1318,10 +1397,15 @@ function generateSchedule(){
           });
 
           // Build assignment respecting groups
+          // Use weekend coverage if Sat(6) or Sun(0)
+          const isWe = dow===0||dow===6;
+          const minCov = isWe ? (sh.coverageWe??sh.coverage??C.coverage) : (sh.coverage||C.coverage);
+          const maxCov = isWe ? (sh.maxCoverageWe??sh.maxCoverage??99) : (sh.maxCoverage||99);
           const assigned=[];
           const used=new Set();
           for(const w of eligible){
             if(used.has(w.id)) continue;
+            if(assigned.length>=maxCov) break;
             assigned.push(w);
             used.add(w.id);
             // Pull in all group-mates
@@ -1336,11 +1420,48 @@ function generateSchedule(){
                 }
               }
             }
-            if(assigned.length>=(sh.coverage||C.coverage)) break;
+            // Stop at minCov if no workers have spare capacity above that
+            if(assigned.length>=minCov){
+              // Only continue past min if there are workers who still need hours
+              const anyNeedHours = eligible.some(e=>!used.has(e.id) && state[e.id].h < monthlyMaxH[e.id]*0.9);
+              if(!anyNeedHours) break;
+            }
           }
 
-          if(assigned.length<(sh.coverage||C.coverage))
-            monthWarnings.push(`Día ${d} · ${sh.name}: ${assigned.length}/${sh.coverage||C.coverage} personas`);
+          if(assigned.length<minCov)
+            monthWarnings.push(`Día ${d} · ${sh.name}: ${assigned.length}/${minCov} personas`);
+
+          // ── Detectar ausencias de trabajadores con turno fijo ──
+          forcedIds.forEach(wid=>{
+            if(assigned.find(a=>a.id===wid)) return; // sí trabajó, ok
+            const w=workers.find(x=>x.id===wid); if(!w) return;
+            // Determinar razón de ausencia
+            let reason='Restricción de descanso';
+            const effectiveConsec = state[w.id].lastDay===d-1 ? state[w.id].consec : 0;
+            if(effectiveConsec>=C.consec) reason=`Límite de ${C.consec} días consecutivos`;
+            else if(state[w.id].compWindowEnd && !state[w.id].compFreeTaken && d>=state[w.id].compWindowEnd) reason='Descanso compensatorio por domingo trabajado';
+            else if(state[w.id].h+sh.hours > monthlyMaxH[w.id]) reason='Tope de horas mensual';
+            else if(state[w.id].lastEndMs!==null){
+              const stMs=new Date(yr,mo-1,d,sh.start,0).getTime();
+              if((stMs-state[w.id].lastEndMs)/3600000 < C.rest) reason=`Descanso mínimo (${C.rest}h entre turnos)`;
+            }
+            // Sugerencias: disponibles, no asignados, no bloqueados, con horas
+            const subs=workers.filter(x=>{
+              if(x.id===wid) return false;
+              if(blockedByFix.has(x.id)||blockedByGroup.has(x.id)) return false;
+              if(!x.avail.includes(dow)) return false;
+              if(state[x.id].h+sh.hours > monthlyMaxH[x.id]) return false;
+              if(assigned.find(a=>a.id===x.id)) return false; // ya asignado hoy
+              if(shifts.some(s=>schedule[d]?.[s.id]?.includes(x.id))) return false; // ya trabaja hoy
+              return true;
+            }).sort((a,b)=>{
+              // Prefer: same pshift, then fewest hours
+              const ap=a.pshift===sh.id?-1:0, bp=b.pshift===sh.id?-1:0;
+              if(ap!==bp) return ap-bp;
+              return state[a.id].h-state[b.id].h;
+            }).slice(0,3);
+            monthAbsences.push({day:d,dow,sh,worker:w,reason,subs,mo,yr});
+          });
 
           assigned.forEach(w=>{
             schedule[d][sh.id].push(w.id);
@@ -1375,7 +1496,7 @@ function generateSchedule(){
       const wh = Object.fromEntries(workers.map(w=>[w.id,state[w.id].h]));
       // Store cumulative hours snapshot per month
       const monthWh = Object.fromEntries(workers.map(w=>[w.id,state[w.id].h]));
-      allSchedules[`${yr}-${mo}`] = {schedule, workerHours:monthWh, warnings:monthWarnings, yr, mo, days};
+      allSchedules[`${yr}-${mo}`] = {schedule, workerHours:monthWh, warnings:monthWarnings, absences:monthAbsences, yr, mo, days};
     }
 
     btns.forEach(b=>{b.disabled=false;b.textContent='⚡ Generar Turnos'});
@@ -1387,17 +1508,28 @@ function generateSchedule(){
 function renderAllSchedules(yr, selectedMonths){
   // Warnings summary
   const allWarnings = selectedMonths.flatMap(mo=>(allSchedules[`${yr}-${mo}`]?.warnings||[]).map(w=>`${MONTHS[mo-1]}: ${w}`));
+  const allAbsences = selectedMonths.flatMap(mo=>(allSchedules[`${yr}-${mo}`]?.absences||[]));
   const wb=document.getElementById('warnings-box');
+  let wbHtml='';
+  if(allAbsences.length){
+    wbHtml+=`<div style="background:#d4884a12;border:1px solid #d4884a44;border-radius:8px;padding:10px 14px;margin-bottom:8px;display:flex;align-items:center;gap:10px">
+      <span style="font-size:16px">🔄</span>
+      <span style="font-size:11px;color:var(--warn);font-weight:700">${allAbsences.length} ausencia(s) de turno fijo detectada(s)</span>
+      <span style="font-size:10px;color:var(--dim)">— Ver sugerencias de reemplazo en cada mes ↓</span>
+    </div>`;
+  }
   if(allWarnings.length){
-    wb.innerHTML=`<div class="card" style="margin-bottom:10px">
-      <div class="card-title">⚠ Alertas <span>(${allWarnings.length})</span></div>
+    wbHtml+=`<div class="card" style="margin-bottom:10px">
+      <div class="card-title">⚠ Alertas de cobertura <span>(${allWarnings.length})</span></div>
       <div style="max-height:100px;overflow-y:auto;display:flex;flex-direction:column;gap:3px">
         ${allWarnings.slice(0,25).map(w=>`<div class="warn-box">${w}</div>`).join('')}
         ${allWarnings.length>25?`<div style="color:var(--warn);font-size:9px">…y ${allWarnings.length-25} más</div>`:''}
       </div></div>`;
-  } else {
-    wb.innerHTML=`<div class="ok-box" style="margin-bottom:10px">✓ Cobertura completa en todos los meses</div>`;
   }
+  if(!allWarnings.length && !allAbsences.length){
+    wbHtml=`<div class="ok-box" style="margin-bottom:10px">✓ Cobertura completa — sin ausencias en turnos fijos</div>`;
+  }
+  wb.innerHTML=wbHtml;
 
   // Month nav tabs
   const nav=document.getElementById('schedule-tabs-nav');
@@ -1510,10 +1642,49 @@ function buildMonthHTML(yr,mo){
     </div>
   </div>`;
 
+  // ── Tarjeta de ausencias y sugerencias ──
+  const absences = (allSchedules[`${yr}-${mo}`]?.absences||[]);
+  const absCard = absences.length ? `
+  <div class="card" style="margin-top:14px;border-left:3px solid var(--warn)">
+    <div class="card-title" style="color:var(--warn)">🔄 Ausencias de Turnos Fijos — Sugerencias de Reemplazo <span style="color:var(--dim)">(${absences.length})</span></div>
+    <div style="display:flex;flex-direction:column;gap:8px">
+      ${absences.map(a=>{
+        const wColor=a.worker?.color||'var(--dim)';
+        const dayName=DAYS[a.dow];
+        const dateStr=`${dayName} ${a.day}/${String(mo).padStart(2,'0')}`;
+        const subChips=a.subs.length
+          ? a.subs.map(s=>`<span style="display:inline-flex;align-items:center;gap:5px;background:${s.color}18;border:1px solid ${s.color}55;border-radius:20px;padding:3px 10px;font-size:11px;color:var(--text2);font-weight:600">
+              <span style="width:7px;height:7px;border-radius:50%;background:${s.color};display:inline-block;flex-shrink:0"></span>
+              ${s.name}
+              ${s.pshift===a.sh.id?'<span style="font-size:9px;color:'+a.sh.color+';margin-left:2px">★ pref</span>':''}
+            </span>`).join('')
+          : `<span style="font-size:11px;color:var(--dim2)">Sin reemplazantes disponibles ese día</span>`;
+        return `<div style="background:var(--bg3);border:1px solid var(--border);border-radius:8px;padding:12px;display:flex;align-items:flex-start;gap:14px;flex-wrap:wrap">
+          <div style="min-width:160px">
+            <div style="display:flex;align-items:center;gap:7px;margin-bottom:4px">
+              <div style="width:8px;height:8px;border-radius:50%;background:${wColor};flex-shrink:0"></div>
+              <span style="font-weight:700;color:var(--text2);font-size:12px">${a.worker?.name||'—'}</span>
+            </div>
+            <div style="display:flex;gap:5px;align-items:center;flex-wrap:wrap">
+              <span style="background:${a.sh.color}22;border:1px solid ${a.sh.color}55;border-radius:5px;padding:2px 8px;font-size:10px;color:${a.sh.color};font-weight:700">📌 ${a.sh.name}</span>
+              <span style="font-size:10px;color:var(--dim)">${dateStr}</span>
+            </div>
+            <div style="font-size:10px;color:var(--warn);margin-top:5px">⚠ ${a.reason}</div>
+          </div>
+          <div style="flex:1;min-width:180px">
+            <div style="font-size:9px;color:var(--dim);margin-bottom:6px;text-transform:uppercase;letter-spacing:.06em;font-weight:700">Reemplazantes sugeridos</div>
+            <div style="display:flex;gap:6px;flex-wrap:wrap">${subChips}</div>
+          </div>
+        </div>`;
+      }).join('')}
+    </div>
+  </div>` : '';
+
   return `${legend}
     <div class="tbl-wrap" style="margin-bottom:6px">
       <table><thead>${thead}</thead><tbody>${rows}</tbody></table>
     </div>
+    ${absCard}
     ${hourCards}`;
 }
 // ══════════════════════════════════════════════════════════════
